@@ -1,0 +1,158 @@
+---
+title: "ST7016_Project"
+author: "ZIHAO LI"
+date: "10/27/2021"
+output: word_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+In this case, I’m going to use Multivariate normal distribution as the sampling model because the normal density is often a useful approximation to the “true” population distribution because of a central limit effect. And the assumption of prior will be a weakly informative g-prior on $\beta$ with k = g$\sigma^2$ and g = n since I need parameter estimation to be invariant to changes in the scale of the covariates. Typical settings are reference in lectures. And the mathematical expression will shown below.($\beta$: regression coefficients, $\sigma^2$: residual variance, I: identity matrix, $\nu_0$: hyperparamter of $\sigma^2$)
+
+$$ y|X,\beta,\sigma^2 \sim MVN(X\beta, \sigma^2I) $$
+
+$$ \sigma^2 \sim InvGamma(\nu_0/2 = 1/2, \nu_0 \sigma_0^2/2 = \hat{\sigma}_{ols}^2/2) \ \ \ (unit\ prior\ on\ \sigma^2)  $$
+
+The X in this case is a 2923 x 30 matrix with a first column of 1's (intercept term), columns two to nine are for the main effects for each of the 8 predictors, and the remaining columns
+represent the values of the 21 two-way interaction terms.
+
+Let $z_j$ = 1 if variable j is selected to be included in the model (j = 1,...,30). Let $X_z$ denotes the columns of X for which the corresponding model selection indicator variable $z_j$ = 1. The steps of the sampling algorithm at iteration t are are:
+
+Step 1: Update model selection indicator variable z = c($z_1$,$z_2$,...,$z_{30}$)
+
+Step 1(a): Set z = $z^{t-1}$
+Step 1(b): For j takes value of {1,...,30} in random order, replace $z_j$ with a sample from $p(z_j | z_{-j},y, X)$
+Step1(c): Set $z^{(t)}$ = z
+
+Step 2: Update $\sigma^2$ 
+
+Sample $$ \sigma_{(t)}^2 \sim InvGamma(\frac{(\nu_0 + n)}{2}, \frac{\nu_0 \sigma_0^2+SSR_g}{2}) $$
+
+Since our assumption is weakly informative priors, I set $\nu_0$ = 1 and $\sigma_0^2$ = $\sigma_{ols}^2$ and g = n, which $\sigma_{ols}^2$ = 0.005556809 and $SSR_g$ = $$ y^T(I - \frac{g}{g+1}X_z(X_z^TX_z)^{-1}X_z)y$$
+
+Step 3: Update $\beta$ 
+
+Sample $\beta^{(t)}$ $\sim$ MVN($\beta_m$, $V_{\beta}$), where $$\beta_m = V_{\beta}X_z^Ty$$ and $$ V_{\beta} = \frac{g}{g+1} \sigma_{(t)}^2(X_z^TX_z)^{-1}$$
+
+
+Then, let's implement our MCMC algorithm into the R code and see how it works.
+
+
+```{r eval=FALSE}
+BETA<-Z<-matrix(NA,S,p) 
+S2<-NULL
+z<-rep(1,dim(X)[2] ) 
+lpy.c<-lpy.X(Y,X[,z==1,drop=FALSE]) 
+
+for(s in 1:S)
+{
+  for(j in sample(2:p)) 
+  {
+    zp<-z ; zp[j]<-1-zp[j]
+    lpy.p<-lpy.X(Y,X[,zp==1,drop=FALSE])
+    r<- (lpy.p - lpy.c)*(-1)^(zp[j]==0)
+    z[j]<-rbinom(1,1,1/(1+exp(-r)))
+    if(z[j]==zp[j]) {lpy.c<-lpy.p}
+  }
+  
+  beta<-z
+  if(sum(z)>0){
+    temp<-lm.gprior(Y,X[,z==1,drop=FALSE],S=1)
+    beta[z==1]<-temp$beta
+    s2<-temp$s2}
+  
+  Z[s,]<-z
+  BETA[s,]<-beta
+  S2<-c(S2,s2)
+  print(s)
+}
+```
+
+Since I have up to 30 predictors features, I'm passively use cross-validation in this case, one reason is that could save up some execution times (I initially set the number of iterations to be executed are 500 times, and it took about 2hr 32mins), the other reason is for the calculation of prediction error as the assessing criteria for our model. Based on the proportion of 30% to 70%, there are 1670 rows of data in the train dataset and 2507 rows in the test dataset. In this case, it took around 46 minutes for the execution of our MCMC algorithm.
+
+First thing first, let's take a look at the plot of posterior probabilities that each coefficient is non-zero.
+
+##Insert post_prob
+
+The Figure 1 indicates the estimated posterior probabilities Pr($z_j$ = 1|y,X). We see that model inclusion indicators for many coefficients are seemed important. If we take a high threshold of 0.8, the plot tells us that 'Whole Weight', 'Shucked Weight', 'Length:Whole Weight', 'Length:Shucked Weight', 'Whole Weight:Shucked Weight' and 'Shucked Weight:Shell Weight' are strongly predictive of 'Rings'. However, this might be affected by the high correlation between weight predictors. Also in the exploration of dataset not shown here, it reports the high correlation between 'length' and 'diameter', 'length' and 'whole weight' as well.
+
+
+Next, I generate the posterior predictive values based our posterior regression coefficients $\beta_j$ and posterior residual variance $\sigma^2$ where j = 1,...,30. And we calculate the value of prediction error as our determining criteria to assess the data fitting.
+
+$$prediction\  error  = \frac{1}{2507} \sum_{i=1}^{2507}(Y_{test} - \hat{Y}_{pred})^2$$
+
+```{r eval=FALSE}
+#Generate posterior predictive values and store them
+y.pred<-NULL 
+for (s in 1:S){
+  beta<-BETA[s,]
+  s2<-S2[s]
+  y.pred<-rbind(y.pred,c(X%*%beta)+rnorm(n,0,sqrt(s2)))
+}
+```
+
+##Insert the mse here
+
+I obtain 0.005729179 as the value of prediction error, and it's a bit higher than the prediction error generated by the classical linear regression model, which has a prediction error value of 0.005372855. That tells there still have space for improvement.
+
+Now, Let's check the residual plot and see if there is normality violated. 
+
+##Insert scatter plot here
+
+The Figure 2 shows a scatter plot of the predictive residuals which are based on the average posterior predictive residual values. And we can see there is no obvious pattern or trend in the plot. Most of the points are randomly spread around the horizontal zero line, and that tells a good fit for the linear model. 
+
+##Insert qqplot here
+
+And the Figure 3 is a QQ plot to assess if there is any departure from the normality. We can see the overall performance of the fitting is reasonable, but there is a slight departure from the regression line. Those observations might be the suspect of the potential outliers, we might need to take a further investigation. When I look at the summary statistics of the abalone dataset, one doubt is the minimum of the height is zero that is unrealistic. And I have abstracted those two records and found their other values of weight parameters are also relatively smaller than the others. In addition, when I take a comparison between the value of 'Whole weight' and the sum of the values of 'Shucked weight', 'Viscera weight' and 'Shell weight', some of them are even negative. One wild guess for that is may due to the loss of unknown water or blood during the shucking process. All of the questionable points mentioned above could be the cause of the outliers or extreme values in the observations.
+
+Back to the Bayesian analysis, in order to see the convergence and stationarity of the sampling algorithm implemented above. I have also generated some diagnostic plots below.
+
+##Insert acf1 and acf2 here
+
+The Figure 4 above shows the acf plots which indicate many of them have the issue of high autocorrelation. The performance of $\sigma^2$ seems fine as the plot decays to 0 quickly. This implies that the thinning process should be applied later. 
+
+##Insert effective_size here
+
+The output of effective size above includes many small sizes which are less than 1000. This could be explained by the high correlation between some weight predictors and physical characteristics (e.g. length, height, diameter). We could possibly solve this either by dropping the highly correlated variables or increasing the number of iterations of running the chain. 
+
+##Insert stationplot1 and stationplot2 here
+
+On the side, the Figure 5 here is the stationarity plots which show some sequences of draws of the $\beta_j$ have not reached convergence. For example, 20th and 21st in the plots. These are not big concerns as they are directly sample from p($\beta$, $\sigma^2$|y, X). 
+
+In the previous acf plots, we can see the lags do have significant effect as many of them have broken the bounds. And I use the sequence of draws taken every 20th iteration and see the difference of acf plots after thinned:
+
+
+##Insert thinacf1 and thinacf2 here
+
+We can see from the Figure 6 that most of them have no problems of high autocorrelation as they rapidly decay to 0.
+
+
+Based on the previous result, I decide to make some modifications to the choice of covariates. The change is to remove the interaction terms since the suggested predictors are having high correlation with other variables. That might mislead the output and possibly cause the problem of overfitting. 
+
+The same algorithm and routine as above have been applied on our covariates matrix. However, there is some problem occur in our acf plot.
+
+##Insert acf_1000ite here
+
+The Figure 7 is the acf plot with only main effects considered with 1000 iterations executed. We can see $\beta_2$,$\beta_3$, and $\beta_9$ still have some troughs and peaks exceed the bounds. We might consider increasing the number of iterations and take 1000 as burn-in period. 
+Therefore, I set the value of S (number of iterations) to 5000, and we obtain the value of prediction error as 0.005276393 which is less than that of the initial model includes the interaction terms. 
+
+##Insert acf_5000ite
+
+##Insert var_ind
+
+Again, the Figure 8 above shows that there is no issues of the high autocorrelation except for the plot of intercept. And the Figure 9 below suggests us 'diameter', 'height', 'whole weight', 'shucked weight', 'viscera weight' and 'shell weight' are strongly predictive of 'rings'. As the model inclusion indicator for all of them have posterior probability which really close to 1. The stationarity diagnostic plots are also provided below.
+
+##Insert stat_5000ite
+
+Lastly, I did a posterior predictive checking to check our sampling model assumption based on any discrepancy of mean and median. The Figure 10 below shows the distribution of posterior mean with replicated data and red vertical line is the mean of observed data.
+
+##Insert post_pred_check
+
+We can see from the Figure 10 that there is not much discrepancies between empirical distribution and posterior predictive distribution,
+
+
+
+
+
